@@ -2,7 +2,8 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
-import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
+import { useAgent, useSessionContext, useSessionMessages, useLocalParticipant } from '@livekit/components-react';
+import { Store, Loader2, Radio, Sparkles, Volume2 } from 'lucide-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
   AgentControlBar,
@@ -156,7 +157,7 @@ export interface AgentSessionView_01Props {
 }
 
 export function AgentSessionView_01({
-  preConnectMessage = 'Agent is listening, ask it a question',
+  preConnectMessage = 'Bazaar Mitra is listening, ask about local products or store deals',
   supportsChatInput = true,
   supportsVideoInput = true,
   supportsScreenShare = true,
@@ -180,6 +181,7 @@ export function AgentSessionView_01({
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
+  const { isSpeaking: isUserSpeaking } = useLocalParticipant();
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -201,9 +203,40 @@ export function AgentSessionView_01({
   return (
     <section
       ref={ref}
-      className={cn('bg-background relative z-10 h-full w-full overflow-hidden', className)}
+      className={cn('bg-background relative z-10 h-full w-full overflow-hidden flex flex-col', className)}
       {...props}
     >
+      {/* Dynamic Header & Speaker Status Badge Bar */}
+      <div className="absolute top-4 inset-x-0 z-30 flex flex-col items-center gap-2 px-4 pointer-events-none">
+        <div className="flex items-center gap-2 rounded-full border border-amber-500/20 bg-background/90 px-4 py-2 backdrop-blur-md shadow-md pointer-events-auto">
+          <Store className="size-4 text-amber-500" />
+          <span className="text-xs font-extrabold text-foreground tracking-wide">Bazaar Mitra</span>
+          <span className="text-muted-foreground">•</span>
+
+          {/* Dynamic Speaker & State Display */}
+          {agentState === 'speaking' ? (
+            <span className="inline-flex items-center gap-2 text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/20">
+              <Volume2 className="size-4 animate-bounce text-amber-500" />
+              Bazaar Mitra is speaking
+            </span>
+          ) : isUserSpeaking || agentState === 'listening' ? (
+            <span className="inline-flex items-center gap-2 text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">
+              <Radio className="size-4 animate-pulse text-emerald-500" />
+              Listening to you
+            </span>
+          ) : agentState === 'thinking' ? (
+            <span className="inline-flex items-center gap-2 text-xs font-bold text-purple-600 dark:text-purple-400 bg-purple-500/10 px-3 py-1 rounded-full border border-purple-500/20">
+              <Sparkles className="size-4 animate-spin text-purple-500" />
+              Thinking...
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 bg-slate-500/10 px-3 py-1 rounded-full border border-slate-500/20">
+              <Loader2 className="size-4 animate-spin" />
+              Connecting...
+            </span>
+          )}
+        </div>
+      </div>
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
       {/* transcript */}
 
