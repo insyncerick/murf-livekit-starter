@@ -1,32 +1,62 @@
 import { ReactNode, useEffect } from 'react';
 import { toast as sonnerToast } from 'sonner';
 import { useAgent, useSessionContext } from '@livekit/components-react';
-import { WarningIcon } from '@phosphor-icons/react';
+import { WarningIcon, MicrophoneSlash } from '@phosphor-icons/react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 
 interface ToastProps {
   title: ReactNode;
   description: ReactNode;
+  icon?: ReactNode;
 }
 
-function toastAlert(toast: ToastProps) {
-  const { title, description } = toast;
+export function toastAlert(toast: ToastProps) {
+  const { title, description, icon } = toast;
 
   return sonnerToast.custom(
     (id) => (
-      <Alert onClick={() => sonnerToast.dismiss(id)} className="bg-accent w-full md:w-[364px]">
-        <WarningIcon weight="bold" />
+      <Alert onClick={() => sonnerToast.dismiss(id)} className="bg-accent border-destructive/30 w-full md:w-[380px]">
+        {icon ?? <WarningIcon weight="bold" />}
         <AlertTitle>{title}</AlertTitle>
         {description && <AlertDescription>{description}</AlertDescription>}
       </Alert>
     ),
-    { duration: 10_000 }
+    { duration: 12_000 }
   );
+}
+
+export function showMicPermissionErrorToast(onRetry?: () => void) {
+  toastAlert({
+    title: 'Microphone Access Required',
+    icon: <MicrophoneSlash weight="bold" className="text-destructive size-5 shrink-0" />,
+    description: (
+      <div className="text-xs space-y-2 mt-1">
+        <p className="font-medium text-foreground leading-relaxed">
+          Microphone access is required to talk to Bazaar Mitra. Please allow microphone access in your browser settings and try again.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={(e) => {
+            e.stopPropagation();
+            sonnerToast.dismiss();
+            onRetry?.();
+            window.location.reload();
+          }}
+          className="mt-1 h-7 text-xs border-destructive/40 hover:bg-destructive/10"
+        >
+          Try Again
+        </Button>
+      </div>
+    ),
+  });
 }
 
 export function useAgentErrors() {
   const agent = useAgent();
-  const { isConnected, end } = useSessionContext();
+  const session = useSessionContext();
+  const { isConnected, end } = session;
 
   useEffect(() => {
     if (isConnected && agent.state === 'failed') {
