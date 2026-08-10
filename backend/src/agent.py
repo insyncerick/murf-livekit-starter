@@ -22,6 +22,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from prompt import SYSTEM_PROMPT
 from user_db import init_db, get_user, save_user
+from catalog_db import check_catalog_and_stock
 
 
 logger = logging.getLogger("agent")
@@ -262,6 +263,71 @@ class Assistant(Agent):
         )
 
         return "The caller information could not be saved."
+
+
+    # =====================================================
+    # TOOL 3 — CATALOG AND ORDER TOTAL
+    # =====================================================
+
+    @function_tool
+    async def check_catalog_and_compute_total(
+        self,
+        context: RunContext,
+        item_quantities: dict
+    ) -> str:
+        """
+        Use this tool to check the catalog for item availability and compute the total cost of an order.
+        It requires the caller to specify the items they want and the quantities.
+        Pass a dictionary where the key is the item name (string) and the value is the quantity (integer).
+        Example: {"rice": 2, "sugar": 1}
+        
+        Always communicate to the caller when the data is from (e.g., "Data as of October 2023").
+        If the tool fails, handle the failure out loud by telling the caller the database is unavailable.
+        """
+        
+        logger.info(f"CHECK CATALOG AND COMPUTE TOTAL → items={item_quantities}")
+        
+        try:
+            # Simulate a brief delay like calling an external API
+            await asyncio.sleep(0.5)
+            
+            result = check_catalog_and_stock(item_quantities)
+            
+            if result["status"] == "error":
+                logger.error("Catalog check failed within tool")
+                return result["message"] # e.g. "The catalog database is currently unavailable..."
+            
+            # Formatting the response for the LLM
+            data_as_of = result.get("data_as_of", "Unknown Date")
+            available_items = result.get("available_items", [])
+            out_of_stock_items = result.get("out_of_stock_items", [])
+            unavailable_items = result.get("unavailable_items", [])
+            total_cost = result.get("total_cost", 0.0)
+            
+            response_text = f"Data as of {data_as_of}.\n"
+            
+            if not available_items and not out_of_stock_items and not unavailable_items:
+                 return f"Data as of {data_as_of}. I couldn't process the order."
+
+            if available_items:
+                response_text += "Available Items:\n"
+                for item in available_items:
+                    note = f" ({item.get('note')})" if item.get('note') else ""
+                    response_text += f"- {item['item']}: {item['quantity']} units for ₹{item['cost']}{note}\n"
+            
+            if out_of_stock_items:
+                 response_text += "Out of Stock Items: " + ", ".join(out_of_stock_items) + "\n"
+                 
+            if unavailable_items:
+                 response_text += "Items Not in Catalog: " + ", ".join(unavailable_items) + "\n"
+                 
+            response_text += f"\nTotal Order Cost: ₹{total_cost}"
+                
+            return response_text
+            
+        except Exception as exc:
+            logger.error(f"Error calling check_catalog_and_stock: {exc}")
+            return "The catalog database is currently unavailable. Please ask the user to try again later."
 
 
 # =========================================================
