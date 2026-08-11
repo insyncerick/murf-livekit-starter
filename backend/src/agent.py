@@ -468,6 +468,9 @@ async def my_agent(ctx: JobContext):
 
     )
 
+    # Force the agent to speak first (outbound call)
+    await session.generate_reply()
+
 
 # =========================================================
 # RUN
