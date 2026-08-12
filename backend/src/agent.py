@@ -23,6 +23,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from prompt import SYSTEM_PROMPT
 from user_db import init_db, get_user, save_user
 from catalog_db import check_catalog_and_stock
+from escalation_db import init_escalation_db, save_escalation
 
 
 logger = logging.getLogger("agent")
@@ -35,6 +36,7 @@ load_dotenv(".env.local")
 # =========================================================
 
 init_db()
+init_escalation_db()
 
 
 # =========================================================
@@ -328,6 +330,66 @@ class Assistant(Agent):
         except Exception as exc:
             logger.error(f"Error calling check_catalog_and_stock: {exc}")
             return "The catalog database is currently unavailable. Please ask the user to try again later."
+
+
+    # =====================================================
+    # TOOL 4 — CREATE HUMAN HELP ESCALATION
+    # =====================================================
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        reason: str,
+        summary: str,
+        agent_checked: str,
+        urgency: str = "medium",
+        language: str = "English",
+        preferred_contact: str = "phone call",
+    ) -> str:
+        """
+        Create a human help request when a situation requires human assistance.
+        
+        CALL THIS TOOL ONLY AFTER THE CALLER HAS EXPLICITLY GIVEN PERMISSION!
+        
+        Parameters:
+          reason: Brief category/reason (e.g., "Order dispute / payment refund issue" or "Custom bulk order negotiation")
+          summary: Safe summary of the issue (WHO needs help, WHAT happened). DO NOT include passwords, OTPs, PINs, or account numbers.
+          agent_checked: Summary of what the agent already verified/checked (e.g., catalog status, order records).
+          urgency: "low", "medium", "high", or "urgent".
+          language: The caller's spoken language (e.g., "English", "Hindi").
+          preferred_contact: Caller's preferred follow-up method (e.g., "phone call", "SMS", "email").
+        """
+        logger.info(
+            f"CREATE ESCALATION → user_id={self._user_id}, reason={reason}, urgency={urgency}"
+        )
+
+        caller_name = self._cached_user.get("name", "") if hasattr(self, "_cached_user") else ""
+        if not caller_name:
+            existing_user = get_user(self._user_id)
+            if existing_user:
+                caller_name = existing_user.get("name", "")
+
+        record = save_escalation(
+            user_id=self._user_id,
+            name=caller_name or "Valued Customer",
+            reason=reason,
+            summary=summary,
+            agent_checked=agent_checked,
+            urgency=urgency,
+            language=language,
+            preferred_contact=preferred_contact,
+        )
+
+        ref_id = record["reference_id"]
+        logger.info(f"ESCALATION CREATED → reference_id={ref_id}")
+
+        return (
+            f"Escalation request successfully created with Reference ID: {ref_id}.\n"
+            f"Inform the caller that their request reference ID is {ref_id}. "
+            f"Explain that a human representative will review their request and follow up "
+            f"via their preferred contact method ({preferred_contact}) within 24 hours."
+        )
 
 
 # =========================================================
