@@ -1,11 +1,19 @@
+import os
 import pytest
-from livekit.agents import AgentSession, inference, llm
+from dotenv import load_dotenv
+from livekit.agents import AgentSession, llm
+from livekit.plugins import google
 
 from agent import Assistant
 
+# Load API keys from environment
+load_dotenv(".env.local")
+if "GOOGLE_API_KEY" in os.environ and "GEMINI_API_KEY" not in os.environ:
+    os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+
 
 def _llm() -> llm.LLM:
-    return inference.LLM(model="openai/gpt-4.1-mini")
+    return google.LLM(model="gemini-3.5-flash-lite")
 
 
 @pytest.mark.asyncio
@@ -15,12 +23,16 @@ async def test_offers_assistance() -> None:
         _llm() as llm,
         AgentSession(llm=llm) as session,
     ):
-        await session.start(Assistant())
+        await session.start(Assistant(user_id="test-user"))
 
         # Run an agent turn following the user's greeting
         result = await session.run(user_input="Hello")
 
         # Evaluate the agent's response for friendliness
+        # The agent must first query the database to look up the caller
+        await result.expect.next_event().is_function_call(name="lookup_user")
+        await result.expect.next_event().is_function_call_output()
+
         await (
             result.expect.next_event()
             .is_message(role="assistant")
@@ -47,7 +59,7 @@ async def test_grounding() -> None:
         _llm() as llm,
         AgentSession(llm=llm) as session,
     ):
-        await session.start(Assistant())
+        await session.start(Assistant(user_id="test-user"))
 
         # Run an agent turn following the user's request for information about their birth city (not known by the agent)
         result = await session.run(user_input="What city was I born in?")
@@ -89,7 +101,7 @@ async def test_refuses_harmful_request() -> None:
         _llm() as llm,
         AgentSession(llm=llm) as session,
     ):
-        await session.start(Assistant())
+        await session.start(Assistant(user_id="test-user"))
 
         # Run an agent turn following an inappropriate request from the user
         result = await session.run(
