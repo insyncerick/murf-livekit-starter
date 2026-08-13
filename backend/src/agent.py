@@ -24,6 +24,7 @@ from prompt import SYSTEM_PROMPT
 from user_db import init_db, get_user, save_user
 from catalog_db import check_catalog_and_stock
 from escalation_db import init_escalation_db, save_escalation
+from calls_db import init_calls_db, record_call_start, mark_call_success, finalize_call
 
 
 logger = logging.getLogger("agent")
@@ -37,6 +38,7 @@ load_dotenv(".env.local")
 
 init_db()
 init_escalation_db()
+init_calls_db()
 
 
 # =========================================================
@@ -45,11 +47,12 @@ init_escalation_db()
 
 class Assistant(Agent):
 
-    def __init__(self, user_id: str) -> None:
+    def __init__(self, user_id: str, call_id: str = "") -> None:
         """
         Initialize the Assistant agent.
         Parameters:
           user_id: Stable identifier for the caller.
+          call_id: Room name / call identifier for outcome tracking.
         """
         instructions = SYSTEM_PROMPT + """
 
@@ -126,6 +129,7 @@ class Assistant(Agent):
 
         # Stable caller identity
         self._user_id = user_id
+        self._call_id = call_id
         # Pre-load any existing user data so the LLM can reference it immediately
         self._cached_user: dict = {}
 
@@ -141,7 +145,7 @@ class Assistant(Agent):
 
     async def start(self, *args, **kwargs):
         # Load user data synchronously before starting session
-        self._cached_user = await self.lookup_user(RunContext())
+        self._cached_user = get_user(self._user_id) or {}
         cached_name = self._cached_user.get("name", "")
         self.instructions = self.instructions.replace(
             "{{cached_user_name}}", f"Saved name: {cached_name}"
@@ -249,6 +253,8 @@ class Assistant(Agent):
         )
 
         if success:
+            if self._call_id:
+                mark_call_success(self._call_id, "Caller saved order preferences / memory")
 
             logger.info(
                 f"MEMORY SAVED SUCCESSFULLY → "
@@ -298,6 +304,9 @@ class Assistant(Agent):
             if result["status"] == "error":
                 logger.error("Catalog check failed within tool")
                 return result["message"] # e.g. "The catalog database is currently unavailable..."
+
+            if self._call_id:
+                mark_call_success(self._call_id, "Product / catalog enquiry completed")
             
             # Formatting the response for the LLM
             data_as_of = result.get("data_as_of", "Unknown Date")
@@ -445,6 +454,13 @@ async def my_agent(ctx: JobContext):
 
 
     # -----------------------------------------------------
+    # RECORD CALL START IN DATABASE
+    # -----------------------------------------------------
+    call_id = ctx.room.name
+    record_call_start(call_id=call_id, user_id=user_id)
+
+
+    # -----------------------------------------------------
     # DEBUG: CHECK DATABASE DIRECTLY
     # -----------------------------------------------------
 
@@ -505,33 +521,38 @@ async def my_agent(ctx: JobContext):
     # START SESSION
     # -----------------------------------------------------
 
-    await session.start(
+    try:
+        await session.start(
 
-        agent=Assistant(
-            user_id=user_id
-        ),
+            agent=Assistant(
+                user_id=user_id,
+                call_id=call_id,
+            ),
 
-        room=ctx.room,
+            room=ctx.room,
 
-        room_options=room_io.RoomOptions(
+            room_options=room_io.RoomOptions(
 
-            audio_input=room_io.AudioInputOptions(
+                audio_input=room_io.AudioInputOptions(
 
-                noise_cancellation=lambda params: (
-                    noise_cancellation.BVCTelephony()
-                    if params.participant.kind
-                    == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                    else noise_cancellation.BVC()
+                    noise_cancellation=lambda params: (
+                        noise_cancellation.BVCTelephony()
+                        if params.participant.kind
+                        == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                        else noise_cancellation.BVC()
+                    ),
+
                 ),
 
             ),
 
-        ),
+        )
 
-    )
-
-    # Force the agent to speak first (outbound call)
-    await session.generate_reply()
+        # Force the agent to speak first (outbound call)
+        await session.generate_reply()
+    finally:
+        logger.info(f"FINALIZING CALL OUTCOME → call_id={call_id}")
+        finalize_call(call_id=call_id)
 
 
 # =========================================================
