@@ -21,10 +21,12 @@ from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from prompt import SYSTEM_PROMPT
+from returns_specialist_prompt import RETURNS_SPECIALIST_PROMPT
 from user_db import init_db, get_user, save_user
 from catalog_db import check_catalog_and_stock
 from escalation_db import init_escalation_db, save_escalation
 from calls_db import init_calls_db, record_call_start, mark_call_success, finalize_call
+from returns_db import init_returns_db, get_order, get_latest_order_for_user, create_return_ticket
 
 
 logger = logging.getLogger("agent")
@@ -39,6 +41,7 @@ load_dotenv(".env.local")
 init_db()
 init_escalation_db()
 init_calls_db()
+init_returns_db()
 
 
 # =========================================================
@@ -400,10 +403,169 @@ class Assistant(Agent):
             f"via their preferred contact method ({preferred_contact}) within 24 hours."
         )
 
+    # =====================================================
+    # TOOL 5 — HANDOFF TO RETURNS & REFUNDS SPECIALIST
+    # =====================================================
+
+    @function_tool
+    async def handoff_to_returns_specialist(
+        self,
+        context: RunContext,
+        reason: str,
+        order_id: str = "",
+        item_summary: str = "",
+    ) -> Agent:
+        """
+        Connect the caller to our dedicated Returns and Refunds Specialist.
+
+        USE THIS TOOL WHEN:
+        - The caller wants to return an item, cancel an order, or request a refund.
+        - The caller mentions damaged, expired, spoiled, or missing products.
+        - The caller wants to check refund status or return policies.
+
+        DO NOT use this for normal grocery purchases, catalog checks, or restock questions.
+        
+        Parameters:
+          reason: Specific reason for the return/refund handoff (e.g. 'damaged milk packet', 'wrong item delivered').
+          order_id: The order ID if mentioned or discovered, otherwise empty.
+          item_summary: The item(s) involved in the return.
+        """
+        logger.info(
+            f"HANDOFF TRIGGERED → Switching to ReturnsSpecialistAgent: "
+            f"reason={reason}, order_id={order_id}, item_summary={item_summary}"
+        )
+
+        caller_name = self._cached_user.get("name", "") if hasattr(self, "_cached_user") else ""
+        if not caller_name:
+            user = get_user(self._user_id)
+            if user:
+                caller_name = user.get("name", "")
+
+        specialist = ReturnsSpecialistAgent(
+            user_id=self._user_id,
+            caller_name=caller_name or "Valued Customer",
+            handoff_reason=reason,
+            handoff_order_id=order_id,
+            item_summary=item_summary,
+            call_id=self._call_id,
+        )
+
+        return specialist
+
 
 # =========================================================
-# LIVEKIT SERVER
+# RETURNS & REFUNDS SPECIALIST AGENT
 # =========================================================
+
+class ReturnsSpecialistAgent(Agent):
+    """
+    Dedicated specialist agent handling returns, damaged goods,
+    cancellations, and refund requests for Local Commerce.
+    """
+
+    def __init__(
+        self,
+        user_id: str,
+        caller_name: str = "Valued Customer",
+        handoff_reason: str = "",
+        handoff_order_id: str = "",
+        item_summary: str = "",
+        call_id: str = "",
+    ) -> None:
+        instructions = RETURNS_SPECIALIST_PROMPT.replace(
+            "{{handoff_reason}}", handoff_reason or "Customer requested return / refund assistance"
+        ).replace(
+            "{{handoff_order_id}}", handoff_order_id or "Not specified yet"
+        ).replace(
+            "{{caller_name}}", caller_name or "Valued Customer"
+        )
+
+        super().__init__(instructions=instructions)
+        self._user_id = user_id
+        self._caller_name = caller_name
+        self._handoff_reason = handoff_reason
+        self._handoff_order_id = handoff_order_id
+        self._item_summary = item_summary
+        self._call_id = call_id
+
+    # =====================================================
+    # SPECIALIST TOOL 1 — LOOKUP ORDER FOR RETURN
+    # =====================================================
+
+    @function_tool
+    async def lookup_order_for_return(
+        self,
+        context: RunContext,
+        order_id: str = "",
+    ) -> dict:
+        """
+        Fetch order items, delivery date, and check return eligibility (within 7 days).
+        If order_id is omitted or not found, it checks the caller's most recent order.
+        """
+        logger.info(f"SPECIALIST: LOOKUP ORDER → order_id={order_id}, user_id={self._user_id}")
+        
+        order = None
+        if order_id:
+            order = get_order(order_id)
+        if not order:
+            order = get_latest_order_for_user(self._user_id)
+
+        if not order:
+            return {
+                "status": "not_found",
+                "message": "No order found. Please ask the customer for their Order ID (e.g. ORD-1001)."
+            }
+
+        return {
+            "status": "found",
+            "order_id": order["order_id"],
+            "delivery_date": order["delivery_date"],
+            "items": order["items"],
+            "total_amount": order["total_amount"],
+            "eligibility": "Eligible for refund/replacement within 7-day return policy",
+        }
+
+    # =====================================================
+    # SPECIALIST TOOL 2 — PROCESS REFUND TICKET
+    # =====================================================
+
+    @function_tool
+    async def process_refund_ticket(
+        self,
+        context: RunContext,
+        order_id: str,
+        items: str,
+        reason: str,
+        refund_amount: float,
+    ) -> dict:
+        """
+        Authorize and generate a refund / return ticket for the customer.
+        
+        Parameters:
+          order_id: The order identifier (e.g., 'ORD-1001').
+          items: Name(s) of the item(s) being returned/refunded.
+          reason: Customer's reason for the refund.
+          refund_amount: The rupee amount to refund.
+        """
+        logger.info(
+            f"SPECIALIST: PROCESSING REFUND → order_id={order_id}, items={items}, refund_amount={refund_amount}"
+        )
+
+        ticket = create_return_ticket(
+            order_id=order_id,
+            user_id=self._user_id,
+            customer_name=self._caller_name,
+            items=items,
+            reason=reason,
+            refund_amount=refund_amount,
+        )
+
+        # Mark call successful
+        if self._call_id:
+            mark_call_success(self._call_id, f"Refund processed: {ticket['return_id']}")
+
+        return ticket
+
 
 server = AgentServer()
 
